@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Streaming Catalog Browser</title>
+<style>
+  :root { --bg:#0b0b14; --panel:#171726; --text:#ececf5; --muted:#a0a0b8; --line:#2a2a40;
+          --hbo:#8a4dff; --para:#0a5cff; --hulu:#1ce783; --dis:#00b3c8; --prime:#ff9900; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+  header { padding:2rem 1.5rem 1rem; background:linear-gradient(135deg,#1d1840,#0b0b14); }
+  h1 { margin:0 0 .3rem; } header p { margin:0; color:var(--muted); }
+  main { max-width:1250px; margin:0 auto; padding:1.5rem; }
+  .panel { background:var(--panel); border-radius:10px; padding:1rem; margin-bottom:1.25rem; }
+  .controls { display:flex; flex-wrap:wrap; gap:.75rem; align-items:center; }
+  input, select, button { padding:.55rem .75rem; border-radius:6px; border:1px solid #33334d; background:#10101c; color:var(--text); font-size:.95rem; }
+  input[type=search] { flex:1 1 240px; }
+  button { background:#5a4bd6; border:none; cursor:pointer; font-weight:600; }
+  button.secondary { background:#33334d; }
+  button:disabled { opacity:.5; cursor:wait; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:.75rem; margin-bottom:1.25rem; }
+  .card { background:var(--panel); border-radius:10px; padding:.9rem 1rem; border-top:5px solid var(--c); cursor:pointer; user-select:none; }
+  .card.off { opacity:.35; }
+  .card h3 { margin:0 0 .3rem; font-size:1.1rem; }
+  .card .big { font-size:1.6rem; font-weight:700; }
+  .card small { display:block; color:var(--muted); margin-top:.15rem; }
+  .count { color:var(--muted); margin:.5rem 0 1rem; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:.55rem .5rem; border-bottom:1px solid var(--line); vertical-align:top; }
+  td:first-child { box-shadow:inset 4px 0 0 var(--c); padding-left:.75rem; }
+  th { cursor:pointer; user-select:none; color:var(--muted); font-weight:600; white-space:nowrap; }
+  th:hover { color:var(--text); }
+  .badge { display:inline-block; padding:.15rem .5rem; margin:0 .25rem .25rem 0; border-radius:999px; font-size:.75rem; font-weight:700; white-space:nowrap; }
+  .t-movie { background:#4a3a8a; } .t-tv { background:#1f6f5c; }
+  .s-hbo { background:var(--hbo); } .s-para { background:var(--para); }
+  .s-hulu { background:var(--hulu); color:#062b16; } .s-dis { background:var(--dis); color:#03242a; }
+  .s-prime { background:var(--prime); color:#2b1a00; }
+  .rating a { color:var(--text); text-decoration:none; white-space:nowrap; }
+  .rating a:hover { text-decoration:underline; }
+  .fresh { color:#ff6b5a !important; } .rotten { color:#7bd88f !important; }
+  .muted { color:var(--muted); }
+  .pager { display:flex; gap:.75rem; align-items:center; justify-content:center; margin:1rem 0; }
+  .notice { font-size:.85rem; color:var(--muted); line-height:1.5; }
+  .warn { color:#ffcf70; }
+  footer { text-align:center; color:var(--muted); font-size:.8rem; padding:2rem 1rem; line-height:1.6; }
+  a { color:#b4a3ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Streaming Catalog Browser</h1>
+  <p>HBO Max · Paramount+ · Hulu · Disney+ · Prime Video — full US catalogs with IMDb and Rotten Tomatoes ratings</p>
+</header>
+
+<main>
+  <section class="cards" id="cards"></section>
+
+  <section class="panel">
+    <strong>Data sources</strong>
+    <p class="notice">
+      Catalogs come from Watchmode; ratings come from OMDb. Everything downloaded is saved in this browser, so the
+      site keeps working when credits or daily limits run out. Saved data may be out of date.
+      <span class="warn">Keys are kept only for this browser tab and are never written into the page. Don't hardcode them.</span>
+    </p>
+    <div class="controls">
+      <input type="password" id="wmKey" placeholder="Watchmode API key (catalogs)">
+      <input type="password" id="omdbKey" placeholder="OMDb API key (ratings)">
+      <label class="notice">Max pages per service
+        <input type="number" id="maxPages" value="60" min="1" style="width:80px" title="Each page is up to 250 titles and uses Watchmode credits"></label>
+      <label class="notice"><input type="checkbox" id="forceRefresh"> Force refresh (uses credits)</label>
+      <button id="loadBtn">Load catalogs</button>
+    </div>
+    <div class="controls" style="margin-top:.6rem">
+      <label class="notice"><input type="checkbox" id="autoRatings" checked> Auto-fetch ratings for the page I'm viewing</label>
+      <button id="ratingsBtn" class="secondary">Fetch ratings for this page</button>
+      <button id="testOmdbBtn" class="secondary">Test OMDb key</button>
+      <button id="exportBtn" class="secondary">Export snapshot (catalog.json)</button>
+      <button id="clearBtn" class="secondary">Delete saved data</button>
+    </div>
+    <p class="notice" id="status"></p>
+    <p class="notice" id="ratingStatus"></p>
+  </section>
+
+  <section class="panel controls">
+    <input type="search" id="search" placeholder="Search titles…">
+    <select id="typeFilter">
+      <option value="all">Movies & TV</option>
+      <option value="movie">Movies</option>
+      <option value="tv">TV shows</option>
+    </select>
+    <select id="minImdb" title="Only titles whose rating has been fetched">
+      <option value="0">Any IMDb rating</option>
+      <option value="6">IMDb 6.0+</option>
+      <option value="7">IMDb 7.0+</option>
+      <option value="8">IMDb 8.0+</option>
+    </select>
+    <label class="notice"><input type="checkbox" id="multiOnly"> Only titles on 2+ services</label>
+  </section>
+
+  <div class="count" id="count"></div>
+  <table>
+    <thead>
+      <tr>
+        <th data-key="title">Title ⇅</th>
+        <th data-key="year">Year ⇅</th>
+        <th data-key="type">Type ⇅</th>
+        <th data-key="svc">Services ⇅</th>
+        <th data-key="imdb">IMDb ⇅</th>
+        <th data-key="rt">Rotten Tomatoes ⇅</th>
+      </tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div class="pager">
+    <button id="prevBtn" class="secondary">← Prev</button>
+    <span id="pageInfo" class="notice"></span>
+    <button id="nextBtn" class="secondary">Next →</button>
+  </div>
+</main>
+
+<footer>
+  Streaming availability data provided by <a href="https://api.watchmode.com" target="_blank" rel="noopener">Watchmode</a>.
+  Ratings via <a href="https://www.omdbapi.com" target="_blank" rel="noopener">OMDb API</a> (CC BY-NC 4.0).
+  Tomatometer® scores belong to <a href="https://www.rottentomatoes.com" target="_blank" rel="noopener">Rotten Tomatoes</a>;
+  IMDb ratings belong to <a href="https://www.imdb.com" target="_blank" rel="noopener">IMDb</a>.<br>
+  Data may be incomplete or out of date. Not affiliated with any streaming service, Watchmode, OMDb, IMDb, or Rotten Tomatoes.
+</footer>
+
+<script>
+// ================= Configuration =================
+// "match" = service names with "+" turned into "plus", lowercased, letters and digits only.
+const SERVICES = {
+  hbo:   { name:"HBO Max",     color:"var(--hbo)",   match:["hbomax","max"] },
+  para:  { name:"Paramount+",  color:"var(--para)",  match:["paramountplus","paramountpluswithshowtime","paramountpluspremium","paramountplusessential"] },
+  hulu:  { name:"Hulu",        color:"var(--hulu)",  match:["hulu"] },
+  dis:   { name:"Disney+",     color:"var(--dis)",   match:["disneyplus"] },
+  prime: { name:"Prime Video", color:"var(--prime)", match:["primevideo","amazonprimevideo"] }
+};
+const P = "sc-v2:";               // storage key prefix
+const DAY = 864e5;
+const MAX_AGE = 30 * DAY;         // Watchmode free plan: refresh or delete cached data within 30 days
+const REUSE = 7 * DAY;            // reuse a complete saved catalog this recent without spending credits
+const RATING_TTL = 60 * DAY;      // re-check ratings after this long
+const OMDB_DAILY = 950;           // stay under OMDb's 1,000/day free limit
+const PAGE_SIZE = 50;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const fmt = ms => new Date(ms).toLocaleDateString("en-US", { month:"short", day:"numeric", year:"numeric" });
+const setStatus = m => { $("status").textContent = m; };
+const setRatingStatus = m => { $("ratingStatus").textContent = m; };
+
+// ================= Storage (wrapped: can be full, blocked, or corrupted) =================
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(P + k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(P + k, JSON.stringify(v)); return true; }
+              catch (e) { console.warn("Storage write failed:", e); return false; } },
+  del(k) { try { localStorage.removeItem(P + k); } catch {} }
+};
+function cleanupOldVersion() {
+  try { Object.keys(localStorage).filter(k => k.startsWith("wm-catalog-v1:")).forEach(k => localStorage.removeItem(k)); } catch {}
+  store.del("sources");   // old service-ID cache that may hold an empty Paramount+ result
+}
+
+// ================= State =================
+const catalogs = {};   // svc -> { savedAt, partial, origin, titles: [[watchmodeId, title, year, type, imdbId]] }
+let ratings = store.get("ratings") || {};   // imdbId -> [imdbRating|null, rtPercent|null, fetchedAt]
+let merged = [];
+const active = new Set(Object.keys(SERVICES));
+let sortKey = "title", sortAsc = true, page = 1, pageRows = [];
+let storageWarning = false;
+const fresh = c => c && Array.isArray(c.titles) && typeof c.savedAt === "number" && Date.now() - c.savedAt <= MAX_AGE;
+
+// ================= Saved data and optional site snapshot =================
+function loadSaved() {
+  Object.keys(SERVICES).forEach(k => {
+    const c = store.get("cat:" + k);
+    if (fresh(c)) catalogs[k] = { ...c, origin:"saved" };
+    else if (c) store.del("cat:" + k);   // older than 30 days: delete
+  });
+}
+
+async function loadSnapshot() {
+  // Optional catalog.json next to index.html (created with "Export snapshot").
+  try {
+    const res = await fetch("catalog.json", { cache:"no-store" });
+    if (!res.ok) return;
+    const snap = await res.json();
+    Object.entries(snap.catalogs || {}).forEach(([k, c]) => {
+      if (SERVICES[k] && fresh(c) && (!catalogs[k] || c.savedAt > catalogs[k].savedAt))
+        catalogs[k] = { ...c, origin:"snapshot" };
+    });
+    Object.entries(snap.ratings || {}).forEach(([id, r]) => {
+      if (Array.isArray(r) && (!ratings[id] || r[2] > ratings[id][2])) ratings[id] = r;
+    });
+  } catch { /* no snapshot, or opened as a local file */ }
+}
+
+function rebuild() {
+  const byId = new Map();
+  Object.entries(catalogs).forEach(([k, c]) => c.titles.forEach(([id, title, year, type, imdb]) => {
+    let t = byId.get(id);
+    if (!t) byId.set(id, t = { id, title, year, type, imdb, svc:[] });
+    if (!t.svc.includes(k)) t.svc.push(k);
+  }));
+  merged = [...byId.values()];
+}
+
+// ================= Watchmode =================
+// list-titles parameters (limit, sort_by, types) are from general knowledge; verify against Watchmode's docs.
+const httpMsg = s => s === 429 ? "Watchmode's rate or credit limit was reached (HTTP 429)."
+  : (s === 401 || s === 403) ? `Watchmode rejected the request (HTTP ${s}); the key may be invalid or out of credits.`
+  : `Watchmode returned an error (HTTP ${s}).`;
+const fail = (message, partial, stopAll) => Object.assign(new Error(message), { partial, stopAll });
+
+function readQuota(res) {   // only readable if Watchmode exposes these headers to browsers
+  const total = parseInt(res.headers.get("X-Account-Quota"), 10);
+  const used = parseInt(res.headers.get("X-Account-Quota-Used"), 10);
+  return Number.isFinite(total) && Number.isFinite(used) ? { total, used, remaining: total - used } : null;
+}
+
+const norm = s => String(s).toLowerCase().replace(/\+/g, "plus").replace(/[^a-z0-9]/g, "");
+const ADDON = /\(|\bvia\b|\bchannel\b|\broku\b|\bapple tv\b/i;   // skip "Paramount+ (Via Amazon Prime)" etc.
+let sourceCandidates = {};   // near-misses, shown when a service isn't found
+
+async function getSourceIds(key) {
+  const cached = store.get("sources-v2");
+  if (cached && Date.now() - cached.savedAt < MAX_AGE && Object.values(cached.ids).every(a => a.length)) return cached.ids;
+
+  let res;
+  try { res = await fetch(`https://api.watchmode.com/v1/sources/?apiKey=${encodeURIComponent(key)}&regions=US`); }
+  catch { throw new Error("Couldn't reach Watchmode (offline or blocked)."); }
+  if (!res.ok) throw new Error(httpMsg(res.status));
+  const list = await res.json().catch(() => null);
+  if (!Array.isArray(list)) throw new Error("Watchmode's service list couldn't be read.");
+
+  const ids = {};
+  sourceCandidates = {};
+  Object.entries(SERVICES).forEach(([k, s]) => {
+    ids[k] = list.filter(x => !ADDON.test(x.name) && s.match.includes(norm(x.name))).map(x => x.id);
+    if (!ids[k].length)
+      sourceCandidates[k] = list.filter(x => norm(x.name).includes(s.match[0])).map(x => `"${x.name}" (#${x.id})`);
+  });
+  // Only save the lookup if every service was found, so a miss is retried next time.
+  if (Object.values(ids).every(a => a.length)) store.set("sources-v2", { savedAt: Date.now(), ids });
+  return ids;
+}
+
+async function fetchCatalog(key, ids, maxPages, onPage) {
+  const titles = [];
+  let complete = false, quota = null, total = null;
+  for (let p = 1; p <= maxPages; p++) {
+    onPage(p);
+    const url = `https://api.watchmode.com/v1/list-titles/?apiKey=${encodeURIComponent(key)}` +
+      `&source_ids=${ids.join(",")}&regions=US&types=movie,tv_series,tv_miniseries&sort_by=title_asc&limit=250&page=${p}`;
+    let res;
+    try { res = await fetch(url); } catch { throw fail("Couldn't reach Watchmode (offline or blocked).", titles, true); }
+    quota = readQuota(res) || quota;
+    if (!res.ok) throw fail(httpMsg(res.status), titles, [401, 403, 429].includes(res.status));
+    const j = await res.json().catch(() => null);
+    if (!j || !Array.isArray(j.titles)) throw fail("Watchmode's response had no title list (possibly a quota message).", titles, true);
+    total = j.total_results ?? total;
+    j.titles.forEach(t => titles.push([t.id, t.title, t.year || "", t.type === "movie" ? "movie" : "tv", t.imdb_id || ""]));
+    if (p >= (j.total_pages || 1)) { complete = true; break; }
+    if (quota && quota.remaining <= 0) break;   // stop before the next request fails
+  }
+  return { titles, complete, quota, total };
+}
+
+function saveCatalog(k, titles, partial) {
+  const c = { savedAt: Date.now(), partial, titles };
+  catalogs[k] = { ...c, origin:"live" };
+  if (!store.set("cat:" + k, c)) storageWarning = true;
+}
+
+async function loadCatalogs() {
+  const key = $("wmKey").value.trim();
+  const force = $("forceRefresh").checked;
+  const maxPages = Math.max(1, parseInt($("maxPages").value, 10) || 1);
+  if (!key) {
+    setStatus(merged.length ? "No Watchmode key entered. Showing saved data, which may be out of date."
+                            : "Enter a Watchmode API key, then click Load catalogs.");
+    return;
+  }
+  $("loadBtn").disabled = true;
+  storageWarning = false;
+  const log = [];
+  try {
+    let ids;
+    try { ids = await getSourceIds(key); }
+    catch (e) { log.push(`${e.message} Showing saved data where available (may be out of date).`); return; }
+
+    for (const [k, s] of Object.entries(SERVICES)) {
+      const prev = catalogs[k];
+      if (prev && !prev.partial && !force && Date.now() - prev.savedAt < REUSE) {
+        log.push(`${s.name}: reused copy from ${fmt(prev.savedAt)} (no credits used).`); continue;
+      }
+      if (!ids[k] || !ids[k].length) {
+        const near = sourceCandidates[k]?.length ? ` Similar names: ${sourceCandidates[k].join(", ")}.` : "";
+        log.push(`${s.name}: not found in Watchmode's service list.${near}`); continue;
+      }
+      try {
+        const r = await fetchCatalog(key, ids[k], maxPages, p => setStatus(`Fetching ${s.name}, page ${p}…`));
+        if (!r.complete && prev && prev.titles.length > r.titles.length) {
+          log.push(`${s.name}: only ${r.titles.length} titles downloaded, so the larger copy from ${fmt(prev.savedAt)} was kept (may be out of date).`);
+        } else {
+          saveCatalog(k, r.titles, !r.complete);
+          log.push(r.complete ? `${s.name}: ${r.titles.length} titles.`
+                              : `${s.name}: ${r.titles.length} of ${r.total ?? "?"} titles (partial: page or credit limit).`);
+        }
+        if (r.quota) log.push(`Credits left: ${r.quota.remaining} of ${r.quota.total}.`);
+        if (r.quota && r.quota.remaining <= 0) { log.push("Out of credits; remaining services use saved copies."); break; }
+      } catch (e) {
+        if (e.partial?.length && (!prev || e.partial.length > prev.titles.length)) {
+          saveCatalog(k, e.partial, true);
+          log.push(`${s.name}: ${e.message} Kept the ${e.partial.length} titles downloaded before the error.`);
+        } else {
+          log.push(`${s.name}: ${e.message} ${prev ? `Using saved copy from ${fmt(prev.savedAt)} (may be out of date).` : "No saved copy yet."}`);
+        }
+        if (e.stopAll) { log.push("Stopped; other services keep their saved copies."); break; }
+      }
+    }
+  } finally {
+    if (storageWarning) log.push("Browser storage is full, so some catalogs won't be kept after you close the page.");
+    $("loadBtn").disabled = false;
+    rebuild(); renderCards(); render();
+    setStatus(log.join(" "));
+  }
+}
+
+// ================= OMDb ratings =================
+const failedIds = new Set();
+let ratingBusy = false, omdbStop = "", pendingRatings = null;
+
+function omdbUsage() {
+  const day = new Date().toISOString().slice(0, 10);
+  const u = store.get("omdb-day");
+  return u && u.day === day ? u : { day, count: 0 };
+}
+const needsRating = t => t.imdb && !failedIds.has(t.imdb) && (!ratings[t.imdb] || Date.now() - ratings[t.imdb][2] > RATING_TTL);
+
+function explainOmdb(err) {
+  if (/limit/i.test(err)) return "OMDb's daily request limit was reached. Ratings resume tomorrow.";
+  if (/api key/i.test(err)) return `OMDb rejected the key ("${err}"). New keys only work after you click the activation link OMDb emails you.`;
+  return err;
+}
+
+async function omdbLookup(key, id) {
+  try {
+    const res = await fetch(`https://www.omdbapi.com/?apikey=${encodeURIComponent(key)}&i=${encodeURIComponent(id)}`);
+    const j = await res.json();
+    if (j.Response === "False") {
+      if (/limit|api key/i.test(j.Error || "")) return { stop: explainOmdb(j.Error) };
+      return { rating: [null, null, Date.now()] };   // title not in OMDb
+    }
+    const imdb = parseFloat(j.imdbRating);
+    const rt = (j.Ratings || []).find(r => r.Source === "Rotten Tomatoes");
+    const rtNum = rt ? parseInt(rt.Value, 10) : NaN;
+    return { rating: [Number.isFinite(imdb) ? imdb : null, Number.isFinite(rtNum) ? rtNum : null, Date.now()] };
+  } catch { return { failed: true }; }
+}
+
+async function fetchRatings(list) {
+  const key = $("omdbKey").value.trim();
+  if (!key) { setRatingStatus("Enter an OMDb API key to load IMDb and Rotten Tomatoes ratings."); return; }
+  if (omdbStop) { setRatingStatus(`OMDb paused: ${omdbStop} Saved ratings still show.`); return; }
+  if (ratingBusy) { pendingRatings = list; return; }   // run this page after the current batch
+
+  const todo = [...new Set(list.filter(needsRating).map(t => t.imdb))];
+  if (!todo.length) {
+    if (list.length && list.every(t => !t.imdb))
+      setRatingStatus("No title on this page has an IMDb ID, so OMDb can't look them up.");
+    return;
+  }
+
+  ratingBusy = true;
+  const usage = omdbUsage();
+  let networkFails = 0, done = 0;
+  try {
+    for (let i = 0; i < todo.length; ) {
+      const room = OMDB_DAILY - usage.count;
+      if (room <= 0) { omdbStop = "This browser's daily OMDb budget is used up. Try again tomorrow."; break; }
+      const batch = todo.slice(i, i + Math.min(4, room));
+      i += batch.length;
+      const results = await Promise.all(batch.map(id => omdbLookup(key, id)));
+      usage.count += batch.length;
+      store.set("omdb-day", usage);
+      results.forEach((r, n) => {
+        if (r.stop) omdbStop = r.stop;
+        else if (r.rating) { ratings[batch[n]] = r.rating; done++; }
+        else { failedIds.add(batch[n]); networkFails++; }
+      });
+      setRatingStatus(`Fetching ratings… OMDb lookups today: ${usage.count} of ${OMDB_DAILY}.`);
+      render(false);
+      if (omdbStop) break;
+    }
+  } finally {
+    ratingBusy = false;
+    const saved = store.set("ratings", ratings);
+    setRatingStatus(
+      omdbStop ? `OMDb paused: ${omdbStop} Saved ratings still show.`
+      : (networkFails && !done) ? "Couldn't reach OMDb. Check your connection, and try turning off ad blockers or strict privacy settings for this page."
+      : !saved ? "Browser storage is full, so new ratings won't be kept after you close the page."
+      : `OMDb lookups today: ${usage.count} of ${OMDB_DAILY} (this browser).`);
+    render(false);
+    if (pendingRatings && !omdbStop) { const next = pendingRatings; pendingRatings = null; fetchRatings(next); }
+  }
+}
+
+async function testOmdb() {
+  const key = $("omdbKey").value.trim();
+  if (!key) { setRatingStatus("Enter an OMDb key first."); return; }
+  setRatingStatus("Testing OMDb key…");
+  try {
+    const res = await fetch(`https://www.omdbapi.com/?apikey=${encodeURIComponent(key)}&i=tt0111161`);
+    const j = await res.json();
+    if (j.Response === "False") { setRatingStatus(`Test failed: ${explainOmdb(j.Error || "unknown error")}`); return; }
+    const rt = (j.Ratings || []).find(r => r.Source === "Rotten Tomatoes");
+    omdbStop = ""; failedIds.clear();
+    setRatingStatus(`Key works: ${j.Title} · IMDb ${j.imdbRating} · Rotten Tomatoes ${rt ? rt.Value : "not provided"}. Loading this page's ratings…`);
+    fetchRatings(pageRows);
+  } catch {
+    setRatingStatus("Couldn't reach OMDb. Check your connection, and try turning off ad blockers or strict privacy settings for this page.");
+  }
+}
+
+// ================= Rendering =================
+function originLabel(k) {
+  const c = catalogs[k];
+  if (!c) return "Not loaded yet";
+  const left = Math.max(0, Math.ceil((c.savedAt + MAX_AGE - Date.now()) / DAY));
+  const base = c.origin === "live" ? `Downloaded ${fmt(c.savedAt)}`
+    : c.origin === "snapshot" ? `Site snapshot from ${fmt(c.savedAt)} · may be out of date`
+    : `Saved copy from ${fmt(c.savedAt)} · may be out of date`;
+  return `${base}${c.partial ? " (partial)" : ""} · expires in ${left} day(s)`;
+}
+
+function renderCards() {
+  $("cards").innerHTML = Object.entries(SERVICES).map(([k, s]) => {
+    const mine = merged.filter(t => t.svc.includes(k));
+    const movies = mine.filter(t => t.type === "movie").length;
+    return `<div class="card ${active.has(k) ? "" : "off"}" style="--c:${s.color}" data-key="${k}" title="Click to show/hide">
+      <h3>${esc(s.name)}</h3>
+      <div class="big">${mine.length.toLocaleString()}</div>
+      <small>${movies.toLocaleString()} movies · ${(mine.length - movies).toLocaleString()} TV</small>
+      <small>${esc(originLabel(k))}</small>
+    </div>`;
+  }).join("");
+  document.querySelectorAll(".card").forEach(card => card.addEventListener("click", () => {
+    const k = card.dataset.key;
+    active.has(k) ? active.delete(k) : active.add(k);
+    page = 1; renderCards(); render();
+  }));
+}
+
+const imdbOf = t => ratings[t.imdb]?.[0] ?? null;
+const rtOf = t => ratings[t.imdb]?.[1] ?? null;
+
+function ratingCells(t) {
+  if (!t.imdb) return `<td class="muted" title="No IMDb ID">—</td><td class="muted" title="No IMDb ID">—</td>`;
+  const r = ratings[t.imdb];
+  if (!r) return `<td class="muted" title="Not fetched yet">…</td><td class="muted" title="Not fetched yet">…</td>`;
+  const imdbHTML = r[0] != null
+    ? `<a href="https://www.imdb.com/title/${esc(t.imdb)}/" target="_blank" rel="noopener">⭐ ${r[0].toFixed(1)}</a>` : `<span class="muted">—</span>`;
+  const rtHTML = r[1] != null
+    ? `<a class="${r[1] >= 60 ? "fresh" : "rotten"}" href="https://www.rottentomatoes.com/search?search=${encodeURIComponent(t.title)}"
+          target="_blank" rel="noopener">${r[1] >= 60 ? "🍅" : "🟢"} ${r[1]}%</a>` : `<span class="muted">—</span>`;
+  return `<td class="rating">${imdbHTML}</td><td class="rating">${rtHTML}</td>`;
+}
+
+function render(autoFetch = true) {
+  const q = $("search").value.trim().toLowerCase();
+  const type = $("typeFilter").value, minImdb = parseFloat($("minImdb").value) || 0, multi = $("multiOnly").checked;
+  const val = {
+    title: t => t.title, type: t => t.type, svc: t => t.svc.map(s => SERVICES[s].name).join(","),
+    year: t => Number(t.year) || 0, imdb: t => imdbOf(t) ?? -1, rt: t => rtOf(t) ?? -1
+  };
+  const numeric = ["year", "imdb", "rt"].includes(sortKey);
+
+  const rows = merged.filter(t => t.svc.some(s => active.has(s))
+      && (type === "all" || t.type === type)
+      && (!multi || t.svc.length > 1)
+      && (!minImdb || (imdbOf(t) ?? -1) >= minImdb)
+      && (!q || t.title.toLowerCase().includes(q)))
+    .sort((a, b) => {
+      const A = val[sortKey](a), B = val[sortKey](b);
+      const r = numeric ? A - B : String(A).localeCompare(String(B), undefined, { numeric:true });
+      return (sortAsc ? r : -r) || a.title.localeCompare(b.title);
+    });
+
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  page = Math.min(Math.max(1, page), pages);
+  pageRows = rows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const rated = rows.filter(t => ratings[t.imdb]).length;
+  const noId = rows.filter(t => !t.imdb).length;
+
+  $("count").textContent = merged.length
+    ? `${rows.length.toLocaleString()} titles match · ${rated.toLocaleString()} have ratings fetched` +
+      (noId ? ` · ${noId.toLocaleString()} have no IMDb ID` : "")
+    : "No catalog data yet. Enter a Watchmode API key and click Load catalogs.";
+  $("tbody").innerHTML = pageRows.map(t => `
+    <tr style="--c:${SERVICES[t.svc[0]].color}">
+      <td><strong>${esc(t.title)}</strong></td>
+      <td>${esc(t.year || "—")}</td>
+      <td><span class="badge t-${t.type}">${t.type === "movie" ? "Movie" : "TV"}</span></td>
+      <td>${t.svc.map(s => `<span class="badge s-${s}">${esc(SERVICES[s].name)}</span>`).join("")}</td>
+      ${ratingCells(t)}
+    </tr>`).join("");
+  $("pageInfo").textContent = `Page ${page} of ${pages}`;
+  $("prevBtn").disabled = page <= 1;
+  $("nextBtn").disabled = page >= pages;
+
+  if (autoFetch && $("autoRatings").checked) fetchRatings(pageRows);
+}
+
+// ================= Controls =================
+document.querySelectorAll("th[data-key]").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.key;
+  sortAsc = sortKey === k ? !sortAsc : !["year", "imdb", "rt"].includes(k);   // years and ratings start high-to-low
+  sortKey = k; page = 1; render();
+}));
+["search", "typeFilter", "minImdb", "multiOnly"].forEach(id => $(id).addEventListener("input", () => { page = 1; render(); }));
+$("prevBtn").addEventListener("click", () => { page--; render(); });
+$("nextBtn").addEventListener("click", () => { page++; render(); });
+$("loadBtn").addEventListener("click", loadCatalogs);
+$("ratingsBtn").addEventListener("click", () => fetchRatings(pageRows));
+$("testOmdbBtn").addEventListener("click", testOmdb);
+
+let keyTimer;
+["wmKey", "omdbKey"].forEach(id => {   // keys last only for this browser tab
+  try { $(id).value = sessionStorage.getItem(P + id) || ""; } catch {}
+  $(id).addEventListener("input", () => {
+    try { sessionStorage.setItem(P + id, $(id).value); } catch {}
+    if (id === "omdbKey") {
+      omdbStop = ""; failedIds.clear();
+      clearTimeout(keyTimer);
+      keyTimer = setTimeout(() => { if ($("autoRatings").checked) fetchRatings(pageRows); }, 800);
+    }
+  });
+});
+
+$("exportBtn").addEventListener("click", () => {
+  const cats = {};
+  Object.entries(catalogs).forEach(([k, c]) => { cats[k] = { savedAt: c.savedAt, partial: c.partial, titles: c.titles }; });
+  if (!Object.keys(cats).length) { setStatus("Nothing to export yet. Load catalogs first."); return; }
+  const used = {};
+  merged.forEach(t => { if (t.imdb && ratings[t.imdb]) used[t.imdb] = ratings[t.imdb]; });
+  const blob = new Blob([JSON.stringify({ exportedAt: Date.now(), catalogs: cats, ratings: used })], { type:"application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob); a.download = "catalog.json"; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  setStatus("Snapshot downloaded. Upload catalog.json next to index.html; it expires 30 days after each catalog was downloaded.");
+});
+
+$("clearBtn").addEventListener("click", async () => {
+  try { Object.keys(localStorage).filter(k => k.startsWith(P)).forEach(k => localStorage.removeItem(k)); } catch {}
+  Object.keys(catalogs).forEach(k => delete catalogs[k]);
+  ratings = {}; failedIds.clear(); omdbStop = "";
+  await loadSnapshot();
+  rebuild(); renderCards(); render(false);
+  setStatus("Saved data deleted from this browser." + (merged.length ? " The site's catalog.json snapshot is still shown." : ""));
+});
+
+// ================= Start =================
+(async () => {
+  cleanupOldVersion();
+  loadSaved();
+  await loadSnapshot();
+  rebuild(); renderCards(); render();
+  const loaded = Object.keys(catalogs).map(k => SERVICES[k].name);
+  setStatus(loaded.length ? `Showing saved data for ${loaded.join(", ")}. Click Load catalogs to refresh.`
+                          : "No catalog data yet. Enter a Watchmode API key and click Load catalogs.");
+})();
+</script>
+</body>
+</html>
